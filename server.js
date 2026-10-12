@@ -1,4 +1,4 @@
-// Minimal signaling server for realtic: WebSocket rooms, presence, a sendBeacon endpoint, and
+// Minimal signaling server for realtic: WebSocket groups, presence, a sendBeacon endpoint, and
 // static files for the demos. Delivered messages are not stored, so nothing is redelivered
 // (doc §2.5). Test controls (down, delay, duplicate, redeliver) exist for the test harness.
 //
@@ -18,24 +18,24 @@ const utc = () => new Date().toISOString().replace("T", "_").replace(/:/g, "-").
  * @param {{port?: number, host?: string, log?: boolean, static?: boolean}} [options]
  */
 export async function createSignalingServer({ port = 0, host = "127.0.0.1", log = false, static: serveStatic = true } = {}) {
-  const rooms = new Map();
+  const groups = new Map();
   const controls = { down: false, delayMs: 0, duplicate: false, redeliver: false, transform: null };
   const history = [];
   const say = (...args) => log && console.log(utc(), ...args);
 
-  const deliver = (room, from, to, msg) => {
+  const deliver = (group, from, to, msg) => {
     if (controls.down) return;
     const out = controls.transform ? controls.transform(from, to, msg) : msg;
     if (!out) return;
     const frame = JSON.stringify({ from, msg: out });
     const send = () => {
-      const target = rooms.get(room)?.get(to);
+      const target = groups.get(group)?.get(to);
       if (target && target.readyState === 1) target.send(frame);
     };
     const times = controls.duplicate ? 2 : 1;
     for (let i = 0; i < times; i++) controls.delayMs ? setTimeout(send, controls.delayMs) : send();
     if (controls.redeliver) {
-      history.push({ room, to, frame });
+      history.push({ group, to, frame });
       if (history.length > 200) history.shift();
     }
   };
@@ -48,7 +48,7 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
       req.on("end", () => {
         try {
           const { to, msg } = JSON.parse(body);
-          deliver(url.searchParams.get("room") ?? "default", url.searchParams.get("id"), to, msg);
+          deliver(url.searchParams.get("group") ?? "default", url.searchParams.get("id"), to, msg);
         } catch {
           // ignore malformed beacons
         }
@@ -77,18 +77,18 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
   wss.on("connection", (ws, req) => {
     const url = new URL(req.url, "http://x");
     const id = url.searchParams.get("id");
-    const room = url.searchParams.get("room") ?? "default";
+    const group = url.searchParams.get("group") ?? "default";
     if (!id) return ws.close();
-    if (!rooms.has(room)) rooms.set(room, new Map());
-    const members = rooms.get(room);
+    if (!groups.has(group)) groups.set(group, new Map());
+    const members = groups.get(group);
     members.get(id)?.close();
     for (const [other, sock] of members) {
       if (sock.readyState === 1) sock.send(JSON.stringify({ presence: "join", peer: id }));
       ws.send(JSON.stringify({ presence: "join", peer: other }));
     }
     members.set(id, ws);
-    say("join", room, id);
-    if (controls.redeliver) for (const h of history) if (h.room === room && h.to === id) ws.send(h.frame);
+    say("join", group, id);
+    if (controls.redeliver) for (const h of history) if (h.group === group && h.to === id) ws.send(h.frame);
     ws.on("message", (data) => {
       let frame;
       try {
@@ -97,13 +97,13 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
         return;
       }
       if (typeof frame.to !== "string" || !frame.msg) return;
-      say("msg", room, id, "->", frame.to, frame.msg.t);
-      deliver(room, id, frame.to, frame.msg);
+      say("msg", group, id, "->", frame.to, frame.msg.t);
+      deliver(group, id, frame.to, frame.msg);
     });
     ws.on("close", () => {
       if (members.get(id) !== ws) return;
       members.delete(id);
-      say("leave", room, id);
+      say("leave", group, id);
       for (const sock of members.values()) if (sock.readyState === 1) sock.send(JSON.stringify({ presence: "leave", peer: id }));
     });
   });
@@ -120,10 +120,10 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
     /** Takes the server down (closes all sockets, refuses new ones) or brings it back. */
     setDown(down) {
       controls.down = down;
-      if (down) for (const members of rooms.values()) for (const ws of members.values()) ws.terminate();
+      if (down) for (const members of groups.values()) for (const ws of members.values()) ws.terminate();
     },
     async close() {
-      for (const members of rooms.values()) for (const ws of members.values()) ws.terminate();
+      for (const members of groups.values()) for (const ws of members.values()) ws.terminate();
       wss.close();
       await new Promise((resolve) => http.close(resolve));
     },
