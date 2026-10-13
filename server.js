@@ -11,7 +11,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { formatTime, entryText, LEVELS } from "../../src/diag/log.js";
+import { formatTime, formatTimeUs, entryText, LEVELS } from "../../src/diag/log.js";
 import { realClock } from "../../src/util/clock.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -23,17 +23,17 @@ const utc = () => formatTime(realClock.wallNow());
 /**
  * The lines of a forwarded log request: receive time, the client's entry time, the client id and
  * the entry, all on one line. Times are UTC with microseconds.
- * @param {number} received UTC milliseconds
+ * @param {number} receivedUs UTC microseconds
  * @param {string} id
  * @param {unknown} entries
  */
-export function forwardedLines(received, id, entries) {
+export function forwardedLines(receivedUs, id, entries) {
   if (!Array.isArray(entries)) return "";
-  const at = formatTime(received);
+  const at = formatTimeUs(receivedUs);
   const str = (v, max = 64) => (typeof v === "string" ? v.slice(0, max) : undefined);
   let out = "";
   for (const e of entries) {
-    if (!e || typeof e !== "object" || !Number.isFinite(e.time)) continue;
+    if (!e || typeof e !== "object" || !Number.isSafeInteger(e.timeUs)) continue;
     const entry = {
       level: LEVELS.includes(e.level) ? e.level : "info",
       area: str(e.area) ?? "?",
@@ -42,7 +42,7 @@ export function forwardedLines(received, id, entries) {
       msg: String(e.msg ?? "").slice(0, 4096),
       data: e.data,
     };
-    out += `${at} ${formatTime(e.time)} ${id} #${Number(e.seq) || 0} ${entryText(entry).replace(/[\r\n]+/g, " ")}\n`;
+    out += `${at} ${formatTimeUs(e.timeUs)} ${id} #${Number(e.seq) || 0} ${entryText(entry).replace(/[\r\n]+/g, " ")}\n`;
   }
   return out;
 }
@@ -78,7 +78,7 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
     if (url.pathname.endsWith("/log") && req.method === "POST") {
-      const received = realClock.wallNow();
+      const receivedUs = Math.round(realClock.wallNow() * 1000);
       const group = url.searchParams.get("group") ?? "default";
       const id = url.searchParams.get("id") ?? "";
       if (!logDir) return void res.writeHead(404).end();
@@ -92,7 +92,7 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
       req.on("end", () => {
         if (size > MAX_LOG_BODY_BYTES) return void res.writeHead(413).end();
         try {
-          const lines = forwardedLines(received, id, JSON.parse(Buffer.concat(chunks).toString("utf8")).entries);
+          const lines = forwardedLines(receivedUs, id, JSON.parse(Buffer.concat(chunks).toString("utf8")).entries);
           if (lines) appendFileSync(join(logDir, `${group}.log`), lines);
           res.writeHead(204).end();
         } catch {
