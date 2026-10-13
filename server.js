@@ -1,23 +1,58 @@
-// Minimal signaling server for realtic: WebSocket groups, presence, a sendBeacon endpoint, and
-// static files for the demos. Delivered messages are not stored, so nothing is redelivered
-// (doc §2.5). Test controls (down, delay, duplicate, redeliver) exist for the test harness.
+// Minimal signaling server for realtic: WebSocket groups, presence, a sendBeacon endpoint, a log
+// endpoint for forwardLog, and static files for the demos. Delivered messages are not stored, so
+// nothing is redelivered (doc §2.5). Test controls (down, delay, duplicate, redeliver) exist for
+// the test harness.
 //
-// Usage: node server/node/server.js [port]   then open http://localhost:<port>/examples/call/?server=node
+// Usage: node server/node/server.js [port] [--log-dir <dir>]
+//   then open http://localhost:<port>/examples/call/?server=node
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { formatTime, entryText, LEVELS } from "../../src/diag/log.js";
+import { realClock } from "../../src/util/clock.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const TYPES = { ".js": "text/javascript", ".html": "text/html", ".css": "text/css", ".json": "application/json" };
-const utc = () => new Date().toISOString().replace("T", "_").replace(/:/g, "-").replace("Z", "");
+const NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_LOG_BODY_BYTES = 262144;
+const utc = () => formatTime(realClock.wallNow());
 
 /**
- * Creates a signaling server.
- * @param {{port?: number, host?: string, log?: boolean, static?: boolean}} [options]
+ * The lines of a forwarded log request: receive time, the client's entry time, the client id and
+ * the entry, all on one line. Times are UTC with microseconds.
+ * @param {number} received UTC milliseconds
+ * @param {string} id
+ * @param {unknown} entries
  */
-export async function createSignalingServer({ port = 0, host = "127.0.0.1", log = false, static: serveStatic = true } = {}) {
+export function forwardedLines(received, id, entries) {
+  if (!Array.isArray(entries)) return "";
+  const at = formatTime(received);
+  const str = (v, max = 64) => (typeof v === "string" ? v.slice(0, max) : undefined);
+  let out = "";
+  for (const e of entries) {
+    if (!e || typeof e !== "object" || !Number.isFinite(e.time)) continue;
+    const entry = {
+      level: LEVELS.includes(e.level) ? e.level : "info",
+      area: str(e.area) ?? "?",
+      peer: str(e.peer),
+      session: str(e.session),
+      msg: String(e.msg ?? "").slice(0, 4096),
+      data: e.data,
+    };
+    out += `${at} ${formatTime(e.time)} ${id} #${Number(e.seq) || 0} ${entryText(entry).replace(/[\r\n]+/g, " ")}\n`;
+  }
+  return out;
+}
+
+/**
+ * Creates a signaling server. With `logDir`, POST /log?group=&id= appends forwarded log entries
+ * to `<logDir>/<group>.log`, one file per group in arrival order.
+ * @param {{port?: number, host?: string, log?: boolean, static?: boolean, logDir?: string}} [options]
+ */
+export async function createSignalingServer({ port = 0, host = "127.0.0.1", log = false, static: serveStatic = true, logDir = null } = {}) {
   const groups = new Map();
   const controls = { down: false, delayMs: 0, duplicate: false, redeliver: false, transform: null };
   const history = [];
@@ -42,6 +77,30 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
 
   const http = createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
+    if (url.pathname.endsWith("/log") && req.method === "POST") {
+      const received = realClock.wallNow();
+      const group = url.searchParams.get("group") ?? "default";
+      const id = url.searchParams.get("id") ?? "";
+      if (!logDir) return void res.writeHead(404).end();
+      if (!NAME.test(group) || !NAME.test(id)) return void res.writeHead(400).end();
+      const chunks = [];
+      let size = 0;
+      req.on("data", (c) => {
+        size += c.length;
+        if (size <= MAX_LOG_BODY_BYTES) chunks.push(c);
+      });
+      req.on("end", () => {
+        if (size > MAX_LOG_BODY_BYTES) return void res.writeHead(413).end();
+        try {
+          const lines = forwardedLines(received, id, JSON.parse(Buffer.concat(chunks).toString("utf8")).entries);
+          if (lines) appendFileSync(join(logDir, `${group}.log`), lines);
+          res.writeHead(204).end();
+        } catch {
+          res.writeHead(400).end();
+        }
+      });
+      return;
+    }
     if (url.pathname.endsWith("/beacon") && req.method === "POST") {
       let body = "";
       req.on("data", (c) => (body += c));
@@ -108,6 +167,7 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
     });
   });
 
+  if (logDir) mkdirSync(logDir, { recursive: true });
   await new Promise((resolve) => http.listen(port, host, resolve));
   const actualPort = http.address().port;
   return {
@@ -131,7 +191,11 @@ export async function createSignalingServer({ port = 0, host = "127.0.0.1", log 
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const port = Number(process.argv[2] ?? 8080);
-  const s = await createSignalingServer({ port, host: "0.0.0.0", log: true });
+  const args = process.argv.slice(2);
+  const logAt = args.indexOf("--log-dir");
+  const logDir = logAt >= 0 ? args.splice(logAt, 2)[1] : null;
+  const port = Number(args[0] ?? 8080);
+  const s = await createSignalingServer({ port, host: "0.0.0.0", log: true, logDir });
+  if (logDir) console.log(`${utc()} forwarded logs go to ${logDir}/<group>.log`);
   console.log(`${utc()} realtic signaling server on http://localhost:${s.port}/examples/call/?server=node (timestamps are UTC)`);
 }
