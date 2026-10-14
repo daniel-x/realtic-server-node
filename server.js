@@ -1,7 +1,7 @@
 // Minimal signaling server for realtic: WebSocket groups, presence, a sendBeacon endpoint, a log
 // endpoint for forwardLog, and static files for the demos. Delivered messages are not stored, so
 // nothing is redelivered (doc §2.5). Test controls (down, delay, duplicate, redeliver) exist for
-// the test harness.
+// the integration tests.
 //
 // Usage: node server/node/server.js [port] [--log-dir <dir>]
 //   then open http://localhost:<port>/examples/call/?server=node
