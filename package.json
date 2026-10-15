@@ -1,0 +1,41 @@
+{
+  "name": "realtic-server-node",
+  "version": "0.1.0",
+  "description": "WebSocket signaling server for realtic, serves the realtic client files",
+  "keywords": ["webrtc", "signaling", "websocket", "realtic"],
+  "license": "MIT OR Apache-2.0",
+  "author": "Daniel Strecker",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daniel-x/realtic-server-node.git"
+  },
+  "homepage": "https://github.com/daniel-x/realtic-server-node#readme",
+  "bugs": {
+    "url": "https://github.com/daniel-x/realtic-server-node/issues"
+  },
+  "type": "module",
+  "main": "./server.js",
+  "exports": "./server.js",
+  "bin": {
+    "realtic-server-node": "server.js"
+  },
+  "files": ["server.js", "LICENSE-APACHE", "LICENSE-MIT"],
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "peerDependencies": {
+    "realtic": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "realtic": {
+      "optional": true
+    }
+  }
+}
